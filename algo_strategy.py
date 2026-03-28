@@ -235,9 +235,44 @@ class AlgoStrategy(gamelib.AlgoCore):
     # =========================================================================
     # LAYER 4: WALL/PATH DEFENSE SYSTEM
     # =========================================================================
+    def get_hardcoded_defense(self, attack_location):
+        """Check if attack location matches a predefined pattern.
+        Returns list of turret positions if matched, None otherwise."""
+        x, y = attack_location[0], attack_location[1]
+        
+        # Left corner: attacks at (0,13), (1,12), (2,11)
+        if (x, y) in [(0, 13), (1, 12), (2, 11)]:
+            return [[1, 12], [1, 13], [2, 12]]
+        
+        # Left inner: attacks at (5,8), (4,9), (3,10), (6,7)
+        if (x, y) in [(5, 8), (4, 9), (3, 10), (6, 7)]:
+            return [[5, 8], [5, 9], [4, 9]]
+        
+        # Right corner: attacks at (27,13), (26,12), (25,11)
+        if (x, y) in [(27, 13), (26, 12), (25, 11)]:
+            return [[25, 12], [26, 12], [26, 13]]
+        
+        # Right inner: attacks at (24,10), (23,9), (22,8), (21,7)
+        if (x, y) in [(24, 10), (23, 9), (22, 8), (21, 7)]:
+            return [[22, 8], [23, 9], [22, 9]]
+        
+        return None
+    
     def wall_path_defense(self, game_state, target_location):
         """Three-phase surgical turret placement centered on attack location."""
         tx, ty = target_location[0], target_location[1]
+        
+        # Check for hardcoded defense patterns first
+        hardcoded = self.get_hardcoded_defense(target_location)
+        if hardcoded:
+            sp_cost = game_state.type_cost(TURRET)[SP]
+            for loc in hardcoded:
+                if game_state.get_resource(SP) < sp_cost:
+                    return
+                if not game_state.contains_stationary_unit(loc):
+                    game_state.attempt_spawn(TURRET, loc)
+            # Continue with SP dump after hardcoded placements
+            # Fall through to generic placement for remaining SP
         
         # Clamp target to valid arena bounds in our territory
         if ty > 13:
