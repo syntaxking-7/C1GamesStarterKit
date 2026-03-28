@@ -1,5 +1,23 @@
 # Strategy Implementation Analysis
 
+## BUG FIX: Infinite Loop Issue
+
+### Root Cause
+The `wall_path_defense` function calls `find_path_to_edge(target_location)` where `target_location` is in our territory. This returns the path **FROM our territory TO enemy edge** (upward), but we need the **enemy's attack path** (downward toward our scoring edge).
+
+**Result:** 
+- `our_path[-1]` is at y≈13 (boundary), not y≈0 (our edge)
+- Turrets placed in wrong locations
+- Path iteration logic breaks
+
+### Fix
+Rewrite `wall_path_defense` to:
+1. Use target_location directly as the defense anchor point
+2. Place turrets in concentric rings around the attack point
+3. Prioritize cells closer to our edge (lower y values)
+
+---
+
 ## Implementation Status: ✅ COMPLETE
 
 ---

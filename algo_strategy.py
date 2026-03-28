@@ -195,103 +195,113 @@ class AlgoStrategy(gamelib.AlgoCore):
         return self.find_weakest_lane(game_state)
     
     def zone_to_representative_location(self, zone):
-        """Convert zone to a representative location for defense."""
+        """Convert zone to a representative location for defense.
+        These are points in OUR territory where we want to place turrets."""
         if zone == 'left':
-            return [3, 12]
+            return [5, 9]  # Left side of our territory
         elif zone == 'right':
-            return [24, 12]
+            return [22, 9]  # Right side of our territory
         else:
-            return [13, 0]
+            return [13, 5]  # Center of our territory
     
     def find_weakest_lane(self, game_state):
-        """Simulate paths from enemy spawns to find weakest defense."""
-        # Enemy spawn points (top edge)
-        enemy_spawns = [[13, 27], [14, 27], [0, 14], [27, 14], [6, 21], [21, 21]]
+        """Find the weakest defensive lane by checking turret coverage.
+        Returns a location in our territory that needs defense."""
+        # Check 3 main zones: left, center, right
+        # For each zone, count how many of OUR turrets cover that area
+        zones = {
+            'left': [[3, 10], [5, 9], [7, 8], [4, 11], [6, 10]],
+            'center': [[12, 5], [13, 5], [14, 5], [15, 5], [13, 3]],
+            'right': [[24, 10], [22, 9], [20, 8], [23, 11], [21, 10]]
+        }
         
-        min_damage = float('inf')
-        weakest_spawn = None
+        min_coverage = float('inf')
+        weakest_zone = 'center'
         
-        for spawn in enemy_spawns:
-            path = game_state.find_path_to_edge(spawn)
-            if path is None:
-                continue
+        for zone_name, zone_locs in zones.items():
+            coverage = 0
+            for loc in zone_locs:
+                if game_state.game_map.in_arena_bounds(loc):
+                    # Count our turrets that can hit this location
+                    attackers = game_state.get_attackers(loc, 1)  # Player 1 = us
+                    coverage += len(attackers)
             
-            damage = 0
-            for loc in path:
-                attackers = game_state.get_attackers(loc, 0)
-                damage += len(attackers) * self.cached_turret_damage
-            
-            if damage < min_damage:
-                min_damage = damage
-                weakest_spawn = spawn
+            if coverage < min_coverage:
+                min_coverage = coverage
+                weakest_zone = zone_name
         
-        # Return the endpoint in our territory
-        if weakest_spawn:
-            path = game_state.find_path_to_edge(weakest_spawn)
-            if path:
-                # Find the deepest point in our territory (y <= 13)
-                for loc in reversed(path):
-                    if loc[1] <= 13:
-                        return loc
-        
-        return [13, 0]  # Default fallback
+        return self.zone_to_representative_location(weakest_zone)
     
     # =========================================================================
     # LAYER 4: WALL/PATH DEFENSE SYSTEM
     # =========================================================================
     def wall_path_defense(self, game_state, target_location):
-        """Three-phase surgical turret placement along attack path."""
-        # Get the path from target to our edge
-        path = game_state.find_path_to_edge(target_location)
-        if not path:
+        """Three-phase surgical turret placement centered on attack location."""
+        tx, ty = target_location[0], target_location[1]
+        
+        # Clamp target to valid arena bounds in our territory
+        if ty > 13:
+            ty = 13
+        if not game_state.game_map.in_arena_bounds([tx, ty]):
             self.afk_fallback(game_state)
             return
         
-        # Filter path to only our territory (y <= 13)
-        our_path = [loc for loc in path if loc[1] <= 13]
-        if not our_path:
-            self.afk_fallback(game_state)
-            return
-        
-        turrets_placed = 0
         sp_cost = game_state.type_cost(TURRET)[SP]
+        turrets_placed = 0
         
-        # Phase 1: Place 1 turret at absolute edge (end of path)
-        edge_loc = our_path[-1] if our_path else None
-        if edge_loc:
-            adjacent = self.get_adjacent_cells(edge_loc, game_state)
-            for loc in adjacent:
-                if turrets_placed >= 1:
-                    break
-                if game_state.get_resource(SP) >= sp_cost and not game_state.contains_stationary_unit(loc):
-                    if game_state.attempt_spawn(TURRET, loc):
-                        turrets_placed += 1
+        # Collect all candidate positions, sorted by priority:
+        # - Lower y (closer to our edge) = higher priority
+        # - Closer to target x = higher priority
+        candidates = []
         
-        # Phase 2: Place 2 turrets at choke point (1 step from edge)
-        if len(our_path) >= 2:
-            choke_loc = our_path[-2]
-            adjacent = self.get_adjacent_cells(choke_loc, game_state)
-            for loc in adjacent:
-                if turrets_placed >= 3:
-                    break
-                if game_state.get_resource(SP) >= sp_cost and not game_state.contains_stationary_unit(loc):
-                    if game_state.attempt_spawn(TURRET, loc):
-                        turrets_placed += 1
+        # Generate candidates in expanding rings from target, prioritizing lower y
+        for radius in range(0, 8):
+            for dy in range(-radius, radius + 1):
+                dx_range = radius - abs(dy)
+                for dx in [-dx_range, dx_range] if dx_range > 0 else [0]:
+                    loc = [tx + dx, ty + dy]
+                    if loc[1] <= 13 and loc[1] >= 0:
+                        if game_state.game_map.in_arena_bounds(loc):
+                            candidates.append(loc)
         
-        # Phase 3: SP Dump - walk backwards up the path
-        for i in range(len(our_path) - 3, -1, -1):
-            if game_state.get_resource(SP) < sp_cost:
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_candidates = []
+        for loc in candidates:
+            key = (loc[0], loc[1])
+            if key not in seen:
+                seen.add(key)
+                unique_candidates.append(loc)
+        
+        # Sort: prioritize lower y (closer to edge), then closer to center x
+        unique_candidates.sort(key=lambda loc: (loc[1], abs(loc[0] - tx)))
+        
+        # Phase 1: Place 1 turret at the attack point or nearest valid cell
+        for loc in unique_candidates[:10]:
+            if turrets_placed >= 1:
                 break
-            
-            path_loc = our_path[i]
-            # Try path cell and adjacent cells
-            candidates = [path_loc] + self.get_adjacent_cells(path_loc, game_state)
-            
-            for loc in candidates:
-                if game_state.get_resource(SP) < sp_cost:
-                    break
-                if not game_state.contains_stationary_unit(loc):
-                    game_state.attempt_spawn(TURRET, loc)
+            if game_state.get_resource(SP) < sp_cost:
+                return
+            if not game_state.contains_stationary_unit(loc):
+                if game_state.attempt_spawn(TURRET, loc):
+                    turrets_placed += 1
+        
+        # Phase 2: Place 2 more turrets nearby (choke point)
+        for loc in unique_candidates:
+            if turrets_placed >= 3:
+                break
+            if game_state.get_resource(SP) < sp_cost:
+                return
+            if not game_state.contains_stationary_unit(loc):
+                if game_state.attempt_spawn(TURRET, loc):
+                    turrets_placed += 1
+        
+        # Phase 3: SP Dump - continue placing turrets until SP exhausted
+        for loc in unique_candidates:
+            if game_state.get_resource(SP) < sp_cost:
+                return
+            if not game_state.contains_stationary_unit(loc):
+                game_state.attempt_spawn(TURRET, loc)
     
     def get_adjacent_cells(self, location, game_state):
         """Get valid adjacent cells in our territory."""
@@ -299,7 +309,7 @@ class AlgoStrategy(gamelib.AlgoCore):
         candidates = [[x+1, y], [x-1, y], [x, y+1], [x, y-1]]
         valid = []
         for loc in candidates:
-            if loc[1] <= 13 and game_state.game_map.in_arena_bounds(loc):
+            if loc[1] <= 13 and loc[1] >= 0 and game_state.game_map.in_arena_bounds(loc):
                 valid.append(loc)
         return valid
     
@@ -362,7 +372,8 @@ class AlgoStrategy(gamelib.AlgoCore):
             
             damage_score = 0
             for loc in path:
-                # Count enemy turrets in range (squared distance <= 6.25)
+                # Count ENEMY turrets in range that would attack our scouts
+                # Player 0 = enemy structures that attack player 1 units
                 attackers = game_state.get_attackers(loc, 0)
                 damage_score += len(attackers) * self.cached_turret_damage
             
